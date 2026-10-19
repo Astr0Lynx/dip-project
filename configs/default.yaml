@@ -1,0 +1,172 @@
+# =============================================================================
+# docscan default configuration  (contract v1.1)
+# Section ownership: A = detect, cascade, synth | B = pipeline, overlap, rectify,
+#                    illum, binarize, eval | shared = seed, debug_validate, paths
+# Adding new keys inside YOUR section is free. Renaming/removing keys that the
+# other member reads needs a Contract Change Request.
+# Relative paths are relative to the REPO ROOT: open them with config.resolve_path().
+# =============================================================================
+seed: 42
+debug_validate: true          # call docscan.validate.* on every stage output
+
+paths:
+  data_root: data
+  models_root: models
+  results_root: results
+
+# ------------------------------- MEMBER A ------------------------------------
+detect:
+  max_side: 1000              # candidate search runs on a copy downscaled to this long side
+  blur_ksize: 5
+  canny_sigma: 0.33           # auto-Canny: lo=(1-s)*median, hi=(1+s)*median
+  canny_lo_max: 30            # caps: on bright scenes the median rule gives hi=255 and loses
+  canny_hi_max: 80            # low-contrast paper-on-paper edges (about 10-20 grey levels)
+  canny_strong: [60, 150]     # extra map with strong edges only: on textured desks the low caps pick
+                              # up the texture, which fuses with page outlines; page vs desk is strong
+  morph_close_ksize: 5
+  approx_eps_fracs: [0.015, 0.02, 0.03, 0.04]   # approxPolyDP epsilon as fraction of perimeter
+  min_area_frac: 0.005        # candidate area / scene area
+  max_area_frac: 0.90
+  min_side_px: 24             # in downscaled coordinates
+  nms_iou: 0.7                # merge duplicate candidates above this quad IoU
+  max_candidates: 60          # hard cap (best outlines first), keeps runtime and memory bounded
+  min_fallback_solidity: 0.85 # minAreaRect fallback only if hull area / rect area >= this
+  grad_block: 15              # edge map (b): adaptive-threshold block size on the morph gradient
+  grad_c: -4                  # pixel must exceed the local mean by 4 grey levels
+  paper_s_max: 60             # edge map (c): "bright paper" = low saturation ...
+  paper_v_min: 140            # ... and high value (raised to Otsu of V when that is higher)
+  use_hough_fallback: true
+  hough:
+    rho: 1
+    theta_deg: 1.0
+    threshold: 60
+    min_line_len_frac: 0.08   # of downscaled long side
+    max_line_gap_px: 10
+    run_if_fewer_than: 1000   # Hough on an edge map only when it gave fewer contour quads (1000 = always:
+                              # touching pages merge their contours; measured T1 recall 0.70 -> 0.76)
+    max_lines_per_family: 25  # pairing is O(n^4): keep the longest lines only
+    family_tol_deg: 15        # perspective bends "parallel" sides by this much
+    max_families: 6           # dominant rectangle orientations (angle mod 90) searched
+    min_support: 0.6          # fraction of the quad perimeter that must lie on edges
+    max_quads: 10             # Hough quads kept per edge map (best support first)
+
+cascade:
+  mode: full                  # full | heuristic_only | heuristic_ml   (ablation switch)
+  heuristic:                  # stage 1: fast coarse filter (reject-only)
+    min_area_frac: 0.005
+    max_area_frac: 0.90
+    aspect_min: 1.0           # long side / short side of the quad
+    aspect_max: 5.0           # receipts can be long and thin
+    min_ink_frac: 0.004       # blank-paper test on the rectified thumbnail
+    min_text_components: 8
+  ml:                         # stage 2: classical ML decides most candidates
+    model_path: models/cascade_ml.joblib
+    accept_hi: 0.65           # p >= hi  -> accept
+    reject_lo: 0.35           # p <= lo  -> reject ; in between -> ambiguous (stage 3)
+  dl:                         # stage 3: tie-breaker, ambiguous candidates only (STRETCH)
+    enabled: false
+    backbone: mobilenet_v3_small
+    head_path: models/cascade_dl_head.joblib
+    input_size: 128
+    accept_thresh: 0.5
+  final_accept_thresh: 0.5    # used when dl is disabled: ambiguous -> p_ml >= this
+
+synth:
+  canvas_wh: [1600, 1200]
+  n_docs: [1, 5]              # inclusive range
+  n_distractors: [0, 6]
+  doc_long_side_frac: [0.15, 0.45]   # of canvas long side
+  distractor_long_side_frac: [0.15, 0.50]
+  long_side_frac_by_subtype: {id: [0.15, 0.30]}   # overrides the ranges above (ID cards are small)
+  doc_subtype_probs: {id: 0.40, note: 0.35, receipt: 0.25}   # id is dropped (renormalised) without MIDV
+  distractor_subtype_probs: {blank_paper: 0.30, folder: 0.20, book: 0.20, photo: 0.15, device: 0.15}
+  rotation_deg_range: [-45, 45]
+  any_rotation_prob: 0.15     # probability of a fully random rotation
+  # O1 (adopted): ONE camera homography per scene. Objects are laid out as exact rectangles on the
+  # desk plane, then the whole desk is seen through one camera: the desk-plane preimages of the
+  # image corners move outward by up to this fraction of the canvas side.
+  perspective_jitter_frac: 0.12
+  max_place_tries: 500        # rejection sampling per object
+  max_layout_restarts: 20     # objects shrink by layout_shrink after each failed layout
+  layout_shrink: 0.9
+  min_inside_frac: 0.95       # quad area inside the canvas / quad area
+  t0_margin_px: 10            # T0: min gap between objects (touching objects merge into one contour)
+  object_gain: [0.85, 1.10]   # per-object brightness multiplier
+  object_contrast: [0.85, 1.10]
+  drop_shadow: {offset_px: [3, 10], blur_sigma: [3.0, 7.0], opacity: [0.2, 0.4]}
+  light_gradient_min: [0.70, 1.0]   # global illumination: darkest multiplier of a linear gradient
+  shadow_strength: [0.6, 0.9]       # multiplier inside a cast shadow
+  glare_strength: [0.3, 0.7]        # screen-blend amount at the glare centre
+  templates:
+    long_side: [800, 1000]          # px, rendered pages and MIDV templates
+    note_aspect: [0.66, 0.75]       # width / height (A5 = 0.707)
+    receipt_aspect: [0.30, 0.45]
+    note_lines: [6, 14]
+    note_font_frac: [0.028, 0.045]  # font size / page height
+    receipt_chars: [24, 34]         # characters per line (monospace)
+    ruled_prob: 0.30                # blank_paper with ruled lines (hard negative)
+    book_title_prob: 0.5            # book covers with a printed title (hard negative)
+  # DTD categories used as DESK backgrounds (busy patterns such as paisley, dots or zigzags do not
+  # look like any desk). Book covers and photo prints still use every category.
+  background_categories: [marbled, veined, stratified, woven, matted, fibrous, knitted,
+                          gauzy, pleated, porous, stained, smeared, flecked, crosshatched, blotchy]
+                          # dropped: freckled (skin), wrinkled (hide), grooved (corrugated metal),
+                          # cracked (dry mud), pitted, bumpy (rock): no desk looks like that
+  procedural_background_prob: 0.3   # plain / wood / fabric desks even when DTD files exist
+  split_fracs: [0.70, 0.15, 0.15]   # train / val / test, for MIDV doc types and background files
+  split_seed: 42
+  jpeg_quality: [60, 95]
+  blur_sigma: [0.0, 1.2]
+  noise_sigma: [0.0, 6.0]
+  glare_prob: 0.10
+  shadow_prob: 0.30
+  tier_probs: {T0: 0.5, T1: 0.3, T2: 0.2}
+  overlap_limits: {T0: [0.0, 0.0], T1: [0.01, 0.20], T2: [0.20, 0.50]}  # overlap area / smaller object
+  sizes: {train: 1500, val: 300, test: 300}
+  seed_offsets: {train: 0, val: 10000, test: 20000}
+
+# ------------------------------- MEMBER B ------------------------------------
+pipeline:
+  max_scene_side: 2000        # inputs larger than this (phone photos) are downscaled first
+
+overlap:                      # STRETCH: disabled until implemented
+  enabled: false
+  min_quad_fit: 0.85          # detections below this are candidates for repair/splitting
+  min_neighbor_iou: 0.0       # any intersection with another detection triggers analysis
+
+rectify:
+  max_side: 1600              # memory bound for any rectified document
+  min_side: 64
+  interpolation: cubic
+
+illum:
+  method: bgsub               # none | bgsub | homomorphic
+  bgsub:
+    kernel_frac: 0.125        # background kernel = this * min(h,w), forced odd
+    dilate_first: true        # grey dilation removes dark text before blurring
+    work_side: 512            # estimate the background on a copy downscaled to this long side (speed)
+    dilate_ksize: 9           # px at work_side; must exceed the stroke width or text leaks into the background
+  homomorphic:
+    gamma_l: 0.5
+    gamma_h: 1.5
+    c: 1.0
+    d0_frac: 0.05
+
+binarize:
+  methods: [otsu, sauvola, niblack, tuned]
+  primary: otsu               # switch to "tuned" once implemented; OCR / benchmark use this
+  sauvola: {window: 25, k: 0.2, r: 128}
+  niblack: {window: 25, k: 0.2}     # skimage convention: T = m - k*s
+  tuned:
+    windows: [15, 31, 61]
+    k: 0.2
+    min_component_px: 6
+    close_ksize: 2
+
+eval:
+  iou_thresh: 0.5
+  min_visible_fraction: 0.5   # GT documents less visible than this are "optional" (not FN if missed)
+  ocr:
+    lang: eng
+    psm: 6
+    rotations: [0, 90, 180, 270]   # best rotation chosen by mean OCR confidence

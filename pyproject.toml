@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "docscan"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy>=1.24", "opencv-python-headless>=4.8,<5", "scipy>=1.10", "scikit-image>=0.21",
+  "scikit-learn>=1.3", "joblib>=1.3", "pyyaml>=6", "Pillow>=10", "matplotlib>=3.7",
+  "tqdm>=4.66", "pytesseract>=0.3.10", "rapidfuzz>=3.0", "psutil>=5.9", "pytest>=7.4",
+]
+[project.optional-dependencies]
+dl = ["torch>=2.1", "torchvision>=0.16"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
